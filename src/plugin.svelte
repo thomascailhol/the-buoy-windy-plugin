@@ -68,7 +68,7 @@
             return 'http://localhost:3000/api/windy';
         }
 
-        return 'http://localhost:3000/api/windy';
+        return 'http://thesurfkit.com/api/windy';
     })();
 
     let apiBaseUrl = DEFAULT_BASE_URL;
