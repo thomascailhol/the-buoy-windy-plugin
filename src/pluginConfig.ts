@@ -1,16 +1,16 @@
 import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
-    name: 'windy-plugin-my-plugin',
+    name: 'windy-plugin-the-buoy',
     version: '0.1.0',
-    icon: '🔌',
-    title: 'This is my first plugin',
-    description: 'This is my first plugin.',
-    author: 'John Doe (optional company name)',
-    repository: 'https://github.com/windycom/windy-plugin-template',
-    desktopUI: 'rhpane',
-    mobileUI: 'fullscreen',
-    routerPath: '/my-plugin',
+    icon: '🌊',
+    title: 'The Buoy',
+    description: 'Wave buoys from trusted sources (Candhis, NOAA NDBC) with live readings — Powered by The Buoy (labouee.app).',
+    author: 'The Buoy',
+    repository: 'https://labouee.app/',
+    desktopUI: 'embedded',
+    mobileUI: 'small',
+    routerPath: '/the-buoy',
     private: true,
 };
 
