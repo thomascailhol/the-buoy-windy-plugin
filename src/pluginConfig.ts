@@ -5,13 +5,14 @@ const config: ExternalPluginConfig = {
     version: '0.1.0',
     icon: '🌊',
     title: 'The Buoy',
-    description: 'Wave buoys from trusted sources (Candhis, NOAA NDBC) with live readings — Powered by The Buoy (labouee.app).',
+    description:
+        'Wave buoys from trusted sources (Candhis, NOAA NDBC) with live readings — Powered by The Buoy (labouee.app).',
     author: 'The Buoy',
     repository: 'https://labouee.app/',
     desktopUI: 'embedded',
     mobileUI: 'small',
     routerPath: '/the-buoy',
-    private: true,
+    private: false,
 };
 
 export default config;
