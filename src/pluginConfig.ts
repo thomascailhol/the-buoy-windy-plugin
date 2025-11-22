@@ -8,7 +8,7 @@ const config: ExternalPluginConfig = {
     description:
         'Wave buoys from trusted sources (Candhis, NOAA NDBC) with live readings — Powered by The Buoy (labouee.app).',
     author: 'The Buoy',
-    repository: 'https://labouee.app/',
+    repository: 'https://github.com/thomascailhol/the-buoy-windy-plugin',
     desktopUI: 'embedded',
     mobileUI: 'small',
     routerPath: '/the-buoy',
