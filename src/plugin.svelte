@@ -74,15 +74,8 @@
     let apiBaseUrl = DEFAULT_BASE_URL;
 
     let buoys: BuoySummary[] = [];
-    let loading = false;
-    let loadError: string | null = null;
     let markers: L.Marker[] = [];
     let openedPopup: L.Popup | null = null;
-    let markersVisible = true;
-
-    export const onopen = (_params: unknown) => {
-        // Reserved for future deep-links (context menu lat/lon, etc.)
-    };
 
     onMount(() => {
         loadBuoys();
@@ -155,27 +148,18 @@
 
 
     async function loadBuoys() {
-        loading = true;
-        loadError = null;
-
         try {
             buoys = await fetchAllBuoys();
             rebuildMarkers();
         } catch (error) {
-            loadError =
-                error instanceof Error
-                    ? error.message
-                    : 'Unable to load buoys. Check connectivity and API key.';
+            console.error('Failed to load buoys:', error);
             clearMarkers();
-        } finally {
-            loading = false;
         }
     }
 
     function rebuildMarkers() {
         clearMarkers();
         markers = buoys.map(buoy => createMarker(buoy));
-        updateMarkerVisibility();
     }
 
     function clearMarkers() {
@@ -192,11 +176,8 @@
             buoy.last_reading?.unit
         );
         
-        // Only show arrow if direction data is available
         const hasDirection = buoy.last_reading?.direction !== null && buoy.last_reading?.direction !== undefined;
         const arrowHtml = hasDirection ? (() => {
-            // Wave direction is where swell comes FROM; arrow should point TO where it goes.
-            // "◄" points left (270°), so we need: FROM + 180° (to reverse) + 90° (to adjust for left-pointing arrow)
             const swellFrom = buoy.last_reading!.direction!;
             const direction = (swellFrom + 270) % 360;
             return `<span class="buoy-marker__arrow" style="transform: rotate(${direction}deg);">◄</span>`;
@@ -217,39 +198,21 @@
         return marker;
     }
 
-    function updateMarkerVisibility() {
-        if (markersVisible) {
-            markers.forEach(marker => {
-                if (!map.hasLayer(marker)) {
-                    marker.addTo(map);
-                }
-            });
-        } else {
-            markers.forEach(marker => {
-                if (map.hasLayer(marker)) {
-                    map.removeLayer(marker);
-                }
-            });
-            openedPopup?.remove();
-        }
-    }
-
     function markerColorForHeight(height?: number | null) {
         if (height === null || height === undefined) return '#9fb9bf';
         
-        // Windy's official wave height color palette
-        if (height >= 12) return '#9a7f9b';  // [154,127,155]
-        if (height >= 10) return '#bfbfbf';  // [191,191,191]
-        if (height >= 7) return '#bf6757';   // [191,103,87]
-        if (height >= 5) return '#bf335f';   // [191,51,95]
-        if (height >= 4) return '#853030';   // [133,48,48]
-        if (height >= 3) return '#9a3097';   // [154,48,151]
-        if (height >= 2.5) return '#bb5abf'; // [187,90,191]
-        if (height >= 2) return '#393c8e';   // [57,60,142]
-        if (height >= 1.5) return '#3868bf'; // [56,104,191]
-        if (height >= 1) return '#30628d';   // [48,98,141]
-        if (height >= 0.5) return '#309db9'; // [48,157,185]
-        return '#9fb9bf';  // [159,185,191] - 0m
+        if (height >= 12) return '#9a7f9b';
+        if (height >= 10) return '#bfbfbf';
+        if (height >= 7) return '#bf6757';
+        if (height >= 5) return '#bf335f';
+        if (height >= 4) return '#853030';
+        if (height >= 3) return '#9a3097';
+        if (height >= 2.5) return '#bb5abf';
+        if (height >= 2) return '#393c8e';
+        if (height >= 1.5) return '#3868bf';
+        if (height >= 1) return '#30628d';
+        if (height >= 0.5) return '#309db9';
+        return '#9fb9bf';
     }
 
     function openBuoyPopup(buoy: BuoySummary) {
@@ -287,7 +250,6 @@
             <div class="buoy-popup__stats"></div>
         `;
 
-        // Add click handler to toggle time format
         const timeElement = wrapper.querySelector('.buoy-popup__time') as HTMLElement;
         let showingRelative = true;
         timeElement.addEventListener('click', () => {
@@ -350,7 +312,6 @@
         if (value === null || value === undefined) return '—';
         const digits = value >= 10 ? 1 : 2;
         const suffix = unit ? ` ${unit}` : ' m';
-        // Remove trailing zeros after decimal point
         const formatted = parseFloat(value.toFixed(digits)).toString();
         return `${formatted}${suffix}`;
     }
@@ -404,7 +365,6 @@
             });
             return formatter.format(date);
         } catch {
-            // Fallback if timezone is invalid
             return date.toLocaleString(undefined, {
                 month: 'short',
                 day: 'numeric',
@@ -416,7 +376,6 @@
 </script>
 
 <style lang="less">
-    // Windy CSS Variables (based on style guide)
     @size-xxs: 8px;
     @size-xs: 10px;
     @size-s: 12px;
@@ -428,190 +387,10 @@
     @size-xxxxl: 30px;
     @size-ultra: 40px;
 
-    // Windy Colors - Primary
-    @color-red: #9d0300;
-    @color-red-light: #946051;
     @color-white: #f8f8f8;
-    @color-orange: #d49500;
-    @color-orange-light: #ffe3a1;
-    @color-yellow: #fff3e1;
-    @color-transparent: rgba(68, 65, 65, 0.84);
-
-    // Windy Colors - Grays
     @color-gray: #6b6b6b;
     @color-gray-dark: #4d4d4d;
     @color-gray-light: #e5e5e5;
-
-    // Windy Colors - Status
-    @color-ok: #026f00;
-    @color-error: #c42f2f;
-
-    .panel {
-        background: @color-white;
-        border-radius: @size-s;
-        padding: @size-m;
-        box-shadow: 0 @size-xxs @size-xl rgba(0, 0, 0, 0.05);
-        border: 1px solid @color-gray-light;
-    }
-
-    .panel__header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: @size-s;
-        margin-bottom: @size-s;
-    }
-
-    .panel__eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: @color-gray;
-        font-size: @size-xxs + 3px;
-        font-weight: 600;
-    }
-
-    .panel__headline {
-        font-size: @size-xl;
-        font-weight: 700;
-        color: @color-gray-dark;
-        margin-top: 2px;
-    }
-
-    .panel__meta {
-        color: @color-gray;
-        font-size: @size-s;
-    }
-
-    .panel__actions {
-        display: flex;
-        gap: @size-xxs;
-    }
-
-    .button {
-        background: @color-orange;
-        color: @color-white;
-        border: none;
-        border-radius: @size-xxs;
-        padding: @size-xxs @size-s;
-        font-weight: 600;
-        cursor: pointer;
-        transition: background 0.2s ease;
-        font-size: @size-m;
-    }
-
-    .button:hover {
-        background: darken(@color-orange, 10%);
-    }
-
-    .button[disabled] {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-
-    .button--ghost {
-        background: @color-gray-light;
-        color: @color-gray-dark;
-    }
-
-    .button--ghost:hover {
-        background: darken(@color-gray-light, 5%);
-    }
-
-    .form-row {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        margin-bottom: @size-s;
-    }
-
-    .form-row label {
-        font-size: @size-s + 1px;
-        color: @color-gray;
-        font-weight: 600;
-    }
-
-    .form-row__controls {
-        display: flex;
-        gap: @size-xxs;
-        align-items: center;
-    }
-
-    .form-row input {
-        flex: 1;
-        border: 1px solid @color-gray-light;
-        border-radius: @size-xxs;
-        padding: @size-xxs @size-xs;
-        font-size: @size-m;
-    }
-
-    .buoy-embedded {
-        background: @color-white;
-        border-radius: @size-s;
-        padding: @size-s;
-        box-shadow: 0 @size-xxs @size-xl rgba(0, 0, 0, 0.05);
-        border: 1px solid @color-gray-light;
-        max-width: 420px;
-    }
-
-    .buoy-embedded__header {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: @size-xxs;
-    }
-
-    .buoy-embedded__title {
-        font-weight: 800;
-        font-size: @size-l;
-        color: @color-gray-dark;
-        line-height: 1.2;
-    }
-
-    .buoy-list {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-    }
-
-    .buoy-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: @size-xs;
-        border: 1px solid @color-gray-light;
-        border-radius: @size-xs;
-        background: @color-white;
-    }
-
-    .buoy-row.clickable {
-        cursor: pointer;
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-    }
-
-    .buoy-row.clickable:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px @size-s rgba(0, 0, 0, 0.04);
-    }
-
-    .buoy-row__name {
-        font-weight: 700;
-        color: @color-gray-dark;
-    }
-
-    .buoy-row__meta {
-        color: @color-gray;
-        font-size: @size-s;
-    }
-
-    .buoy-row__value {
-        font-weight: 700;
-        color: @color-orange;
-    }
-
-    .buoy-row--muted {
-        color: @color-gray;
-        justify-content: center;
-    }
 
     :global(.buoy-marker) {
         display: inline-flex;
@@ -624,7 +403,7 @@
         align-items: center;
         gap: 4px;
         padding: 3px 8px 3px 6px;
-        background: var(--badge-color, @color-orange);
+        background: var(--badge-color, #d49500);
         color: @color-white;
         border-radius: 12px;
         font-weight: 600;
@@ -777,31 +556,5 @@
 
     :global(.buoy-popup__footer-logo svg) {
         display: block;
-    }
-
-    :global(.buoy-popup--error .buoy-popup__meta) {
-        color: @color-error;
-    }
-
-    // Skeleton loading states
-    :global(.skeleton) {
-        background: linear-gradient(90deg, @color-gray-light 25%, lighten(@color-gray-light, 5%) 50%, @color-gray-light 75%);
-        background-size: 200% 100%;
-        animation: skeleton-loading 1.5s infinite;
-        border-radius: 4px;
-    }
-
-    :global(.skeleton--line) {
-        height: @size-l;
-        width: 100%;
-    }
-
-    @keyframes skeleton-loading {
-        0% {
-            background-position: 200% 0;
-        }
-        100% {
-            background-position: -200% 0;
-        }
     }
 </style>

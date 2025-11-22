@@ -1,6 +1,6 @@
 {
     "name": "the-buoy-windy-plugin",
-    "version": "0.1.3",
+    "version": "0.1.4",
     "description": "Windy plugin for The Buoy (labouee.app), showing live wave buoys from Candhis & NOAA NDBC on Windy.",
     "main": "dist/plugin.min.js",
     "type": "module",
