@@ -401,12 +401,15 @@
         const popup = new L.Popup({
             autoPanPadding: [20, 30],
             className: 'buoy-leaflet-popup',
-            closeButton: false,
+            closeButton: true,
         })
             .setLatLng([buoy.lat, buoy.lng])
             .setContent(content)
             .openOn(map);
 
+        popup.on('remove', () => {
+            if (openedPopup === popup) openedPopup = null;
+        });
         openedPopup = popup;
     }
 
@@ -673,6 +676,7 @@
         box-shadow: 0 @size-m @size-xxxl rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.1);
         border: none;
         overflow: hidden;
+        position: relative;
     }
 
     :global(.buoy-leaflet-popup .leaflet-popup-tip) {
@@ -681,19 +685,33 @@
 
     :global(.buoy-leaflet-popup .leaflet-popup-close-button) {
         position: absolute;
-        top: @size-xs;
-        right: @size-xs;
-        width: @size-xxl;
-        height: @size-xxl;
-        line-height: @size-xxl;
-        text-align: center;
-        color: @color-white;
+        top: 1px;
+        right: 1px;
+        width: 28px;
+        height: 100%;
+        max-height: 38px;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.7);
         text-decoration: none;
-        font-size: @size-l;
-        background: rgba(0, 0, 0, 0.3);
-        border-radius: @size-xs;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+        font-size: 18px;
+        font-weight: 300;
+        background: rgba(0, 0, 0, 0.1);
+        border: none;
+        border-radius: 0;
+        border-top-right-radius: @size-s;
+        box-sizing: border-box;
+        overflow: hidden;
         z-index: 2;
+        line-height: 1;
+    }
+    :global(.buoy-leaflet-popup .leaflet-popup-close-button span) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     :global(.buoy-popup) {
@@ -704,7 +722,7 @@
     }
 
     :global(.buoy-popup__header) {
-        padding: @size-s @size-m;
+        padding: @size-s @size-xxxl @size-s @size-m;
         color: @color-white;
         position: relative;
         display: flex;
