@@ -183,15 +183,21 @@
         }
     }
 
+    function onMapMoveEnd() {
+        debouncedLoadBuoys();
+    }
+
     onMount(() => {
-        // Initialize locale and translations
         currentLocale = detectLocale();
         t = getTranslations(currentLocale);
         visitorId = getOrCreateVisitorId();
         loadBuoys();
+        map.on('moveend', onMapMoveEnd);
     });
 
     onDestroy(() => {
+        map.off('moveend', onMapMoveEnd);
+        if (debounceTimer) clearTimeout(debounceTimer);
         clearMarkers();
     });
 
@@ -244,36 +250,44 @@
         return (await response.json()) as T;
     }
 
-    async function fetchAllBuoys(): Promise<BuoySummary[]> {
-        const perPage = 100;
-        let page = 1;
-        let totalPages = 1;
-        const all: BuoySummary[] = [];
-
-        while (page <= totalPages) {
-            const json = await fetchJson<BuoysResponse>('/buoys', {
-                page,
-                per_page: perPage,
-                active_only: 'true',
-            });
-
-            const pageBuoys = json.data?.buoys ?? [];
-            all.push(...pageBuoys);
-            totalPages = json.meta?.total_pages ?? 1;
-            page += 1;
-        }
-
-        return all;
+    function getMapBoundsParams(): Record<string, string> {
+        const b = map.getBounds();
+        return {
+            bounds: JSON.stringify({
+                south: b.getSouth(),
+                west: b.getWest(),
+                north: b.getNorth(),
+                east: b.getEast(),
+            }),
+        };
     }
 
+    async function fetchBuoysInBounds(): Promise<BuoySummary[]> {
+        const json = await fetchJson<BuoysResponse>('/buoys', {
+            ...getMapBoundsParams(),
+            per_page: 500,
+            active_only: 'true',
+        });
+
+        return json.data?.buoys ?? [];
+    }
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function debouncedLoadBuoys(delay = 300) {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+            debounceTimer = null;
+            loadBuoys();
+        }, delay);
+    }
 
     async function loadBuoys() {
         try {
-            buoys = await fetchAllBuoys();
+            buoys = await fetchBuoysInBounds();
             rebuildMarkers();
         } catch (error) {
             console.error('Failed to load buoys:', error);
-            clearMarkers();
         }
     }
 
