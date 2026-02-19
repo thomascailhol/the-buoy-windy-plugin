@@ -143,8 +143,10 @@
     let apiBaseUrl = DEFAULT_BASE_URL;
 
     let buoys: BuoySummary[] = [];
-    let markers: L.Marker[] = [];
+    let markerMap = new Map<number, L.Marker>();
     let openedPopup: L.Popup | null = null;
+    let currentPopupBuoy: BuoySummary | null = null;
+    let fetchController: AbortController | null = null;
     let isRefreshing = false;
     let markerDisplayMode: 'height' | 'period' = 'height';
     let heightUnit: 'meters' | 'feet' = 'meters';
@@ -198,6 +200,7 @@
     onDestroy(() => {
         map.off('moveend', onMapMoveEnd);
         if (debounceTimer) clearTimeout(debounceTimer);
+        fetchController?.abort();
         clearMarkers();
     });
 
@@ -229,10 +232,10 @@
         return headers;
     }
 
-    async function fetchJson<T>(path: string, params?: Record<string, string | number | boolean | undefined>) {
+    async function fetchJson<T>(path: string, params?: Record<string, string | number | boolean | undefined>, signal?: AbortSignal) {
         const url = buildApiUrl(path, params);
         const headers = buildHeaders();
-        const response = await fetch(url, { headers });
+        const response = await fetch(url, { headers, signal });
 
         if (!response.ok) {
             let detail = response.statusText;
@@ -251,7 +254,7 @@
     }
 
     function getMapBoundsParams(): Record<string, string> {
-        const b = map.getBounds();
+        const b = map.getBounds().pad(0.3);
         return {
             bounds: JSON.stringify({
                 south: b.getSouth(),
@@ -262,12 +265,12 @@
         };
     }
 
-    async function fetchBuoysInBounds(): Promise<BuoySummary[]> {
+    async function fetchBuoysInBounds(signal?: AbortSignal): Promise<BuoySummary[]> {
         const json = await fetchJson<BuoysResponse>('/buoys', {
             ...getMapBoundsParams(),
             per_page: 500,
             active_only: 'true',
-        });
+        }, signal);
 
         return json.data?.buoys ?? [];
     }
@@ -283,10 +286,15 @@
     }
 
     async function loadBuoys() {
+        fetchController?.abort();
+        const controller = new AbortController();
+        fetchController = controller;
+
         try {
-            buoys = await fetchBuoysInBounds();
-            rebuildMarkers();
+            buoys = await fetchBuoysInBounds(controller.signal);
+            updateMarkers();
         } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') return;
             console.error('Failed to load buoys:', error);
         }
     }
@@ -296,18 +304,43 @@
         isRefreshing = true;
         try {
             await loadBuoys();
+            refreshAllIcons();
         } finally {
             isRefreshing = false;
         }
     }
 
-    function rebuildMarkers() {
-        clearMarkers();
-        markers = buoys.map(buoy => createMarker(buoy));
+    function updateMarkers() {
+        const newBuoyIds = new Set(buoys.map(b => b.id));
+
+        for (const [id, marker] of markerMap) {
+            if (!newBuoyIds.has(id)) {
+                map.removeLayer(marker);
+                markerMap.delete(id);
+                if (currentPopupBuoy?.id === id) {
+                    openedPopup?.remove();
+                    openedPopup = null;
+                    currentPopupBuoy = null;
+                }
+            }
+        }
+
+        for (const buoy of buoys) {
+            if (!markerMap.has(buoy.id)) {
+                markerMap.set(buoy.id, createMarker(buoy));
+            }
+        }
+    }
+
+    function refreshAllIcons() {
+        for (const buoy of buoys) {
+            const marker = markerMap.get(buoy.id);
+            if (marker) marker.setIcon(createIcon(buoy));
+        }
     }
 
     function handleDisplayModeChange() {
-        rebuildMarkers();
+        refreshAllIcons();
     }
 
     function handleHeightClick(event: MouseEvent) {
@@ -323,24 +356,10 @@
     }
 
     function handleUnitChange() {
-        // Rebuild markers and update popups if any are open
-        rebuildMarkers();
-        // If a popup is open, refresh it to show updated units
-        if (openedPopup) {
-            const marker = markers.find(m => {
-                const latlng = m.getLatLng();
-                const popupLatlng = openedPopup?.getLatLng();
-                return popupLatlng && latlng.lat === popupLatlng.lat && latlng.lng === popupLatlng.lng;
-            });
-            if (marker) {
-                const buoy = buoys.find(b => {
-                    const markerLatlng = marker.getLatLng();
-                    return Math.abs(b.lat - markerLatlng.lat) < 0.0001 && Math.abs(b.lng - markerLatlng.lng) < 0.0001;
-                });
-                if (buoy) {
-                    openBuoyPopup(buoy);
-                }
-            }
+        refreshAllIcons();
+        if (currentPopupBuoy) {
+            const freshBuoy = buoys.find(b => b.id === currentPopupBuoy!.id);
+            if (freshBuoy) openBuoyPopup(freshBuoy);
         }
     }
 
@@ -358,12 +377,13 @@
 
     function clearMarkers() {
         openedPopup?.remove();
-        markers.forEach(m => map.removeLayer(m));
-        markers = [];
+        for (const marker of markerMap.values()) map.removeLayer(marker);
+        markerMap.clear();
         openedPopup = null;
+        currentPopupBuoy = null;
     }
 
-    function createMarker(buoy: BuoySummary) {
+    function createIcon(buoy: BuoySummary): L.DivIcon {
         const color = markerColorForHeight(buoy.last_reading?.significient_height);
         
         let displayLabel: string;
@@ -384,7 +404,7 @@
             return `<span class="buoy-marker__arrow" style="transform: rotate(${direction}deg);">◄</span>`;
         })() : '';
         
-        const icon = L.divIcon({
+        return L.divIcon({
             className: 'buoy-marker',
             html: `<div class="buoy-marker__badge" style="--badge-color:${color};">
                 ${arrowHtml}
@@ -393,9 +413,15 @@
             iconSize: [60, 24],
             iconAnchor: [30, 12],
         });
+    }
 
-        const marker = new L.Marker([buoy.lat, buoy.lng], { icon }).addTo(map);
-        marker.on('click', () => openBuoyPopup(buoy));
+    function createMarker(buoy: BuoySummary) {
+        const marker = new L.Marker([buoy.lat, buoy.lng], { icon: createIcon(buoy) }).addTo(map);
+        const buoyId = buoy.id;
+        marker.on('click', () => {
+            const latestBuoy = buoys.find(b => b.id === buoyId);
+            if (latestBuoy) openBuoyPopup(latestBuoy);
+        });
         return marker;
     }
 
@@ -430,9 +456,13 @@
             .openOn(map);
 
         popup.on('remove', () => {
-            if (openedPopup === popup) openedPopup = null;
+            if (openedPopup === popup) {
+                openedPopup = null;
+                currentPopupBuoy = null;
+            }
         });
         openedPopup = popup;
+        currentPopupBuoy = buoy;
     }
 
     function buildBuoyPopupContent(buoy: BuoySummary) {
