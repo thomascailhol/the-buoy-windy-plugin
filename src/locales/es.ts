@@ -3,6 +3,7 @@ export const es = {
     refresh: 'Actualizar datos de boyas',
     waveHeight: 'Altura',
     period: 'Período',
+    energy: 'Energía',
     meters: 'Metros',
     feet: 'Pies',
     title: 'La Boya',

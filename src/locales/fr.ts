@@ -3,6 +3,7 @@ export const fr = {
     refresh: 'Actualiser les données des bouées',
     waveHeight: 'Hauteur',
     period: 'Période',
+    energy: 'Énergie',
     meters: 'Mètres',
     feet: 'Pieds',
     title: 'La Bouée',

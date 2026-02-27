@@ -40,6 +40,14 @@
             >
                 {t.period}
             </a>
+            <a
+                class="switch__item {markerDisplayMode === 'energy' ? 'selected' : ''}"
+                on:click|stopPropagation={handleEnergyClick}
+                role="button"
+                tabindex="0"
+            >
+                {t.energy}
+            </a>
         </nav>
         
         <nav class="switch switch--uiswitch switch--stretch size-s" data-tooltip="Unit">
@@ -95,6 +103,7 @@
         direction_compass?: string | null;
         unit?: string | null;
         energy_per_wave?: number | null;
+        wave_power?: number | null;
     };
 
     type BuoySummary = {
@@ -148,7 +157,7 @@
     let currentPopupBuoy: BuoySummary | null = null;
     let fetchController: AbortController | null = null;
     let isRefreshing = false;
-    let markerDisplayMode: 'height' | 'period' = 'height';
+    let markerDisplayMode: 'height' | 'period' | 'energy' = 'height';
     let heightUnit: 'meters' | 'feet' = 'meters';
     let visitorId: string = '';
     let currentLocale: Locale = 'en';
@@ -355,6 +364,12 @@
         handleDisplayModeChange();
     }
 
+    function handleEnergyClick(event: MouseEvent) {
+        event.preventDefault();
+        markerDisplayMode = 'energy';
+        handleDisplayModeChange();
+    }
+
     function handleUnitChange() {
         refreshAllIcons();
         if (currentPopupBuoy) {
@@ -390,6 +405,8 @@
         if (markerDisplayMode === 'period') {
             const period = buoy.last_reading?.period;
             displayLabel = period !== null && period !== undefined ? `${period.toFixed(1)}s` : '—';
+        } else if (markerDisplayMode === 'energy') {
+            displayLabel = formatEnergyShort(getReadingEnergy(buoy.last_reading));
         } else {
             displayLabel = formatHeightShort(
                 buoy.last_reading?.significient_height,
@@ -492,10 +509,21 @@
         });
 
         const stats = wrapper.querySelector('.buoy-popup__stats') as HTMLElement;
-        stats.appendChild(createStat(t.height, formatHeight(lastReading?.significient_height, lastReading?.unit)));
-        stats.appendChild(createStat(t.hmax, formatHeight(lastReading?.maximum_height, lastReading?.unit)));
-        stats.appendChild(createStat(t.period, formatPeriod(lastReading?.period)));
-        stats.appendChild(createStat(t.direction, formatDirection(lastReading?.direction)));
+        const rowTop = createStatsRow();
+        rowTop.appendChild(createStat(t.height, formatHeight(lastReading?.significient_height, lastReading?.unit)));
+        rowTop.appendChild(createStat(t.hmax, formatHeight(lastReading?.maximum_height, lastReading?.unit)));
+        stats.appendChild(rowTop);
+
+        const rowMiddle = createStatsRow();
+        rowMiddle.appendChild(createStat(t.period, formatPeriod(lastReading?.period)));
+        rowMiddle.appendChild(createStat(t.energy, formatEnergy(getReadingEnergy(lastReading))));
+        stats.appendChild(rowMiddle);
+
+        const rowBottom = createStatsRow();
+        rowBottom.classList.add('buoy-popup__stats-row--joined');
+        rowBottom.appendChild(createDirectionStat(lastReading?.direction));
+        rowBottom.appendChild(createCompassStat(lastReading?.direction, color, lastReading?.period));
+        stats.appendChild(rowBottom);
 
         const footer = document.createElement('div');
         footer.className = 'buoy-popup__footer';
@@ -523,6 +551,143 @@
         item.appendChild(labelDiv);
         item.appendChild(valueDiv);
         return item;
+    }
+
+    function createStatsRow(fullWidth = false) {
+        const row = document.createElement('div');
+        row.className = fullWidth ? 'buoy-popup__stats-row buoy-popup__stats-row--full' : 'buoy-popup__stats-row';
+        return row;
+    }
+
+    function normalizeHexColor(value?: string | null) {
+        if (!value) return null;
+        const trimmed = value.trim();
+        const hex = trimmed.startsWith('#') ? trimmed.slice(1) : trimmed;
+        if (!/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(hex)) return null;
+        return `#${hex}`;
+    }
+
+    function hexToRgba(hexColor: string, alpha: number) {
+        const hex = hexColor.replace('#', '');
+        const fullHex = hex.length === 3 ? hex.split('').map((c) => `${c}${c}`).join('') : hex;
+        const r = parseInt(fullHex.slice(0, 2), 16);
+        const g = parseInt(fullHex.slice(2, 4), 16);
+        const b = parseInt(fullHex.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    function createDirectionStat(direction?: number | null) {
+        const item = createStat(t.direction, formatDirection(direction));
+        item.classList.add('buoy-popup__stat--direction');
+        return item;
+    }
+
+    function createCompassStat(direction?: number | null, accentColor?: string, period?: number | null) {
+        const item = document.createElement('div');
+        item.className = 'buoy-popup__stat buoy-popup__stat--compass';
+        item.appendChild(createCompassDial(direction, accentColor, period));
+        return item;
+    }
+
+    function pulseDurationFromPeriod(period?: number | null): number {
+        if (period == null || !Number.isFinite(period) || period <= 0) return 2.6;
+        return Math.max(1.5, Math.min(period * 0.5, 12));
+    }
+
+    function createCompassDial(direction?: number | null, accentColor?: string, period?: number | null) {
+        const hasDirection = direction !== null && direction !== undefined && Number.isFinite(direction);
+        const compass = document.createElement('div');
+        compass.className = hasDirection ? 'buoy-popup__compass' : 'buoy-popup__compass buoy-popup__compass--missing';
+
+        const resolvedAccent = normalizeHexColor(accentColor) || '#4f8ca6';
+        const pulseDuration = pulseDurationFromPeriod(period);
+        compass.style.setProperty('--compass-accent', resolvedAccent);
+        compass.style.setProperty('--compass-accent-soft', hexToRgba(resolvedAccent, 0.22));
+        compass.style.setProperty('--compass-accent-sweep', hexToRgba(resolvedAccent, 0.16));
+        compass.style.setProperty('--compass-accent-wave', hexToRgba(resolvedAccent, 0.35));
+        compass.style.setProperty('--compass-accent-ripple', hexToRgba(resolvedAccent, 0.28));
+        compass.style.setProperty('--compass-pulse-duration', `${pulseDuration}s`);
+
+        const radar = document.createElement('div');
+        radar.className = 'buoy-popup__compass-radar';
+        compass.appendChild(radar);
+
+        const circleOuter = document.createElement('div');
+        circleOuter.className = 'buoy-popup__compass-circle buoy-popup__compass-circle--outer';
+        radar.appendChild(circleOuter);
+
+        const circleMiddle = document.createElement('div');
+        circleMiddle.className = 'buoy-popup__compass-circle buoy-popup__compass-circle--middle';
+        radar.appendChild(circleMiddle);
+
+        const circleInner = document.createElement('div');
+        circleInner.className = 'buoy-popup__compass-circle buoy-popup__compass-circle--inner';
+        radar.appendChild(circleInner);
+
+        if (hasDirection) {
+            const sweep = document.createElement('div');
+            sweep.className = 'buoy-popup__compass-sweep';
+            radar.appendChild(sweep);
+        }
+
+        const cardinals = document.createElement('div');
+        cardinals.className = 'buoy-popup__compass-cardinals';
+        const north = document.createElement('span');
+        north.className = 'buoy-popup__compass-cardinal buoy-popup__compass-cardinal--n';
+        north.textContent = 'N';
+        const east = document.createElement('span');
+        east.className = 'buoy-popup__compass-cardinal buoy-popup__compass-cardinal--e';
+        east.textContent = 'E';
+        const south = document.createElement('span');
+        south.className = 'buoy-popup__compass-cardinal buoy-popup__compass-cardinal--s';
+        south.textContent = 'S';
+        const west = document.createElement('span');
+        west.className = 'buoy-popup__compass-cardinal buoy-popup__compass-cardinal--w';
+        west.textContent = 'W';
+        cardinals.appendChild(north);
+        cardinals.appendChild(east);
+        cardinals.appendChild(south);
+        cardinals.appendChild(west);
+        compass.appendChild(cardinals);
+
+        if (hasDirection) {
+            const directionLayer = document.createElement('div');
+            directionLayer.className = 'buoy-popup__compass-direction';
+            directionLayer.style.transform = `rotate(${direction}deg)`;
+
+            const cone = document.createElement('div');
+            cone.className = 'buoy-popup__compass-cone';
+            directionLayer.appendChild(cone);
+
+            const source = document.createElement('div');
+            source.className = 'buoy-popup__compass-source';
+            directionLayer.appendChild(source);
+
+            const waves = document.createElement('div');
+            waves.className = 'buoy-popup__compass-waves';
+            [0, 1, 2].forEach((index) => {
+                const wave = document.createElement('div');
+                wave.className = 'buoy-popup__compass-wave';
+                wave.style.animationDelay = `${index * pulseDuration * 0.25}s`;
+                waves.appendChild(wave);
+            });
+            directionLayer.appendChild(waves);
+
+            compass.appendChild(directionLayer);
+        }
+
+        const buoyCenter = document.createElement('div');
+        buoyCenter.className = 'buoy-popup__compass-buoy';
+        const buoyDot = document.createElement('div');
+        buoyDot.className = 'buoy-popup__compass-buoy-dot';
+        buoyCenter.appendChild(buoyDot);
+        if (hasDirection) {
+            const ripple = document.createElement('div');
+            ripple.className = 'buoy-popup__compass-ripple';
+            buoyCenter.appendChild(ripple);
+        }
+        compass.appendChild(buoyCenter);
+        return compass;
     }
 
     function convertToFeet(meters: number): number {
@@ -565,6 +730,40 @@
     function formatPeriod(value?: number | null) {
         if (value === null || value === undefined) return '—';
         return `${value.toFixed(1)} ${t.seconds}`;
+    }
+
+    function formatEnergy(value?: number | null) {
+        if (value === null || value === undefined) return '—';
+        return `${Math.round(value)} kJ`;
+    }
+
+    function formatEnergyShort(value?: number | null) {
+        if (value === null || value === undefined) return '—';
+        return `${Math.round(value)}kJ`;
+    }
+
+    function calculateEnergyFromReading(height?: number | null, period?: number | null) {
+        if (height === null || height === undefined || period === null || period === undefined) return null;
+
+        const h = Number(height);
+        const p = Number(period);
+        if (!Number.isFinite(h) || !Number.isFinite(p) || h <= 0 || p <= 0) return null;
+
+        const seawaterDensity = 1025.0;
+        const gravity = 9.81;
+        const energyPerMeter = (1 / 8) * seawaterDensity * gravity * h * h;
+        const wavelength = (gravity * p * p) / (2 * Math.PI);
+        const energyPerWaveKj = (energyPerMeter * wavelength) / 1000.0;
+
+        if (!Number.isFinite(energyPerWaveKj)) return null;
+        return Math.round(energyPerWaveKj);
+    }
+
+    function getReadingEnergy(reading?: BuoyReading | null) {
+        if (!reading) return null;
+        if (reading.wave_power !== null && reading.wave_power !== undefined) return reading.wave_power;
+        if (reading.energy_per_wave !== null && reading.energy_per_wave !== undefined) return reading.energy_per_wave;
+        return calculateEnergyFromReading(reading.significient_height, reading.period);
     }
 
     function formatDirection(value?: number | null) {
@@ -778,15 +977,43 @@
     }
 
     :global(.buoy-popup__stats) {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
+        display: flex;
+        flex-direction: column;
         gap: 1px;
         background: @color-gray-light;
+    }
+
+    :global(.buoy-popup__stats-row) {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+    }
+
+    :global(.buoy-popup__stats-row--full) {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    :global(.buoy-popup__stats-row--joined) {
+        gap: 0;
     }
 
     :global(.buoy-popup__stat) {
         padding: @size-xs @size-s;
         background: @color-white;
+        width: auto !important;
+        float: none !important;
+    }
+
+    :global(.buoy-popup__stat--direction) {
+        min-height: 56px;
+    }
+
+    :global(.buoy-popup__stat--compass) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: @size-xxs @size-s;
+        min-height: 56px;
     }
 
     :global(.buoy-popup__stat-label) {
@@ -803,6 +1030,274 @@
         color: @color-gray-dark;
         font-size: @size-m;
         line-height: 1.2;
+    }
+
+    :global(.buoy-popup__compass) {
+        --compass-accent: #4f8ca6;
+        --compass-accent-soft: rgba(79, 140, 166, 0.22);
+        --compass-accent-sweep: rgba(79, 140, 166, 0.16);
+        --compass-accent-wave: rgba(79, 140, 166, 0.35);
+        --compass-accent-ripple: rgba(79, 140, 166, 0.28);
+        --compass-radius: 28px;
+        --compass-source-radius: 25px;
+        --compass-pulse-duration: 2.6s;
+        position: relative;
+        width: 56px;
+        height: 56px;
+        flex: 0 0 56px;
+        border-radius: 999px;
+        overflow: hidden;
+        clip-path: circle(50% at 50% 50%);
+        background: radial-gradient(circle at 35% 35%, #ffffff 0%, #f4f6f8 58%, #ebeef2 100%);
+        box-shadow: inset 0 -1px 1px rgba(0, 0, 0, 0.04);
+    }
+
+    :global(.buoy-popup__compass-radar) {
+        position: absolute;
+        inset: 0;
+    }
+
+    :global(.buoy-popup__compass-circle) {
+        position: absolute;
+        border-radius: 999px;
+        border: 1px solid rgba(107, 107, 107, 0.15);
+        pointer-events: none;
+    }
+
+    :global(.buoy-popup__compass-circle--outer) {
+        inset: 3px;
+    }
+
+    :global(.buoy-popup__compass-circle--middle) {
+        inset: 11.34px;
+    }
+
+    :global(.buoy-popup__compass-circle--inner) {
+        inset: 19.67px;
+    }
+
+    :global(.buoy-popup__compass-sweep) {
+        position: absolute;
+        inset: 0;
+        border-radius: 999px;
+        background: conic-gradient(from 180deg, var(--compass-accent-sweep), rgba(0, 0, 0, 0) 75deg);
+        animation: buoy-popup-compass-spin 6s linear infinite;
+        opacity: 0.16;
+        pointer-events: none;
+    }
+
+    :global(.buoy-popup__compass-cardinals) {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 7;
+    }
+
+    :global(.buoy-popup__compass-cardinal) {
+        position: absolute;
+        font-size: 8px;
+        font-weight: 800;
+        color: rgba(107, 107, 107, 0.55);
+        line-height: 1;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        z-index: 1;
+    }
+
+    :global(.buoy-popup__compass-cardinal--n) {
+        top: 3px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    :global(.buoy-popup__compass-cardinal--e) {
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+
+    :global(.buoy-popup__compass-cardinal--s) {
+        bottom: 3px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    :global(.buoy-popup__compass-cardinal--w) {
+        left: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+
+    :global(.buoy-popup__compass-direction) {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        overflow: hidden;
+        clip-path: circle(50% at 50% 50%);
+        transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+        z-index: 3;
+        pointer-events: none;
+    }
+
+    :global(.buoy-popup__compass-source) {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%) translateY(calc(-1 * var(--compass-source-radius)));
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: var(--compass-accent);
+        box-shadow: 0 0 6px var(--compass-accent-wave);
+        z-index: 3;
+    }
+
+    :global(.buoy-popup__compass-cone) {
+        position: absolute;
+        left: 50%;
+        bottom: 50%;
+        transform: translateX(-50%);
+        width: 28px;
+        height: var(--compass-source-radius);
+        clip-path: path('M 14 25 L 1.78 3.18 A 25 25 0 0 1 26.22 3.18 Z');
+        background: linear-gradient(to bottom, var(--compass-accent-soft), rgba(0, 0, 0, 0));
+        filter: blur(0.4px);
+        z-index: 2;
+    }
+
+    :global(.buoy-popup__compass-waves) {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        z-index: 1;
+    }
+
+    :global(.buoy-popup__compass-wave) {
+        position: absolute;
+        left: 50%;
+        top: 6px;
+        width: 18px;
+        height: 2px;
+        transform: translateX(-50%);
+        border-radius: 999px;
+        background: var(--compass-accent-wave);
+        filter: blur(0.2px);
+        opacity: 0;
+        animation: buoy-popup-compass-wave var(--compass-pulse-duration) linear infinite;
+    }
+
+    :global(.buoy-popup__compass-buoy) {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+        border: 2px solid var(--compass-accent);
+        background: #e8f1f5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 5;
+        animation: buoy-popup-compass-bob calc(var(--compass-pulse-duration) * 1.5) ease-in-out infinite;
+    }
+
+    :global(.buoy-popup__compass-buoy-dot) {
+        width: 4px;
+        height: 4px;
+        border-radius: 999px;
+        background: #2d4a54;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+        animation: buoy-popup-compass-dot-pulse var(--compass-pulse-duration) ease-in-out infinite;
+    }
+
+    :global(.buoy-popup__compass-ripple) {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 1px solid var(--compass-accent-ripple);
+        transform: translate(-50%, -50%);
+        animation: buoy-popup-compass-ripple calc(var(--compass-pulse-duration) * 1.1) ease-out infinite;
+    }
+
+    :global(.buoy-popup__compass--missing) {
+        opacity: 1;
+        background: radial-gradient(circle at 35% 35%, #f6f7f9 0%, #eef1f4 100%);
+        box-shadow: inset 0 0 0 1px #dce1e6;
+    }
+
+    :global(.buoy-popup__compass--missing .buoy-popup__compass-buoy) {
+        border-color: #a7b0b8;
+        background: #f1f3f5;
+    }
+
+    :global(.buoy-popup__compass--missing .buoy-popup__compass-buoy-dot) {
+        background: #95a0aa;
+        animation: none;
+    }
+
+    :global(.buoy-popup__compass--missing .buoy-popup__compass-cardinal) {
+        color: rgba(107, 107, 107, 0.4);
+    }
+
+    :global(.buoy-popup__compass--missing .buoy-popup__compass-circle) {
+        border-color: rgba(107, 107, 107, 0.12);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        :global(.buoy-popup__compass-sweep),
+        :global(.buoy-popup__compass-wave),
+        :global(.buoy-popup__compass-buoy),
+        :global(.buoy-popup__compass-buoy-dot),
+        :global(.buoy-popup__compass-ripple) {
+            animation: none !important;
+        }
+    }
+
+    @keyframes buoy-popup-compass-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+
+    @keyframes buoy-popup-compass-wave {
+        0% {
+            transform: translate(-50%, 0) scaleX(0.6);
+            opacity: 0;
+        }
+        35% {
+            opacity: 0.75;
+        }
+        100% {
+            transform: translate(-50%, 38px) scaleX(1.2);
+            opacity: 0;
+        }
+    }
+
+    @keyframes buoy-popup-compass-bob {
+        0%, 100% { transform: translate(-50%, -50%) translateY(0) rotate(0deg); }
+        25% { transform: translate(-50%, -50%) translateY(-1.5px) rotate(7deg); }
+        50% { transform: translate(-50%, -50%) translateY(-2px) rotate(0deg); }
+        75% { transform: translate(-50%, -50%) translateY(-1.5px) rotate(-7deg); }
+    }
+
+    @keyframes buoy-popup-compass-dot-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    @keyframes buoy-popup-compass-ripple {
+        0% {
+            transform: translate(-50%, -50%) scale(0.6);
+            opacity: 0.4;
+        }
+        100% {
+            transform: translate(-50%, -50%) scale(1.9);
+            opacity: 0;
+        }
     }
 
     :global(.buoy-popup__footer) {

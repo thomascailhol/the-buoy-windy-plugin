@@ -3,6 +3,7 @@ export const it = {
     refresh: 'Aggiorna dati delle boe',
     waveHeight: 'Altezza',
     period: 'Periodo',
+    energy: 'Energia',
     meters: 'Metri',
     feet: 'Piedi',
     title: 'The Buoy',

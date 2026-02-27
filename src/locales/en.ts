@@ -3,6 +3,7 @@ export const en = {
     refresh: 'Refresh buoys data',
     waveHeight: 'Wave Height',
     period: 'Period',
+    energy: 'Energy',
     meters: 'Meters',
     feet: 'Feet',
     title: 'The Buoy',

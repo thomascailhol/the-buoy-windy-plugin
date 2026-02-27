@@ -3,6 +3,7 @@ export const de = {
     refresh: 'Bojendaten aktualisieren',
     waveHeight: 'Wellenhöhe',
     period: 'Periode',
+    energy: 'Energie',
     meters: 'Meter',
     feet: 'Fuß',
     title: 'Die Boje',
