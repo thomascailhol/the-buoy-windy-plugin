@@ -81,6 +81,18 @@
     import { getTranslations, detectLocale, type Translations, type Locale } from './locales';
     import PoweredBy from './PoweredBy.svelte';
     import { getPoweredByHtml } from './poweredByHtml';
+    import { fetchWaveForecast, parseWaveForecastModelId, isIconEuWavesCoverage, type WaveForecastSample } from './windyForecast';
+    import {
+        renderForecastChartSvg,
+        chartPxToTime,
+        chartTimeToPx,
+        chartYToPx,
+        interpolateSeriesAt,
+        nearestReadingAtTime,
+        nearestForecastAtTime,
+        type ChartTimeRangeHours,
+        type ChartHoverContext,
+    } from './forecastChart';
 
     declare const L: typeof import('leaflet');
 
@@ -131,6 +143,14 @@
         message?: string;
     };
 
+    type ReadingsListResponse = {
+        status?: string;
+        data?: { readings?: BuoyReading[] };
+        readings?: BuoyReading[];
+        error?: string;
+        message?: string;
+    };
+
     const DEFAULT_BASE_URL = (() => {
         const injected =
             (typeof window !== 'undefined' &&
@@ -156,6 +176,7 @@
     let openedPopup: L.Popup | null = null;
     let currentPopupBuoy: BuoySummary | null = null;
     let fetchController: AbortController | null = null;
+    let popupChartAbort: AbortController | null = null;
     let isRefreshing = false;
     let markerDisplayMode: 'height' | 'period' | 'energy' = 'height';
     let heightUnit: 'meters' | 'feet' = 'meters';
@@ -164,6 +185,10 @@
     let t: Translations = getTranslations();
 
     const VISITOR_ID_STORAGE_KEY = 'the-buoy-visitor-id';
+
+    /** Purple palette aligned with La Bouée mobile app */
+    const APP_PURPLE = '#7B5BB8';
+    const APP_PURPLE_LIGHT = '#C4B2E0';
 
     function getOrCreateVisitorId(): string {
         if (typeof window === 'undefined') {
@@ -210,6 +235,7 @@
         map.off('moveend', onMapMoveEnd);
         if (debounceTimer) clearTimeout(debounceTimer);
         fetchController?.abort();
+        popupChartAbort?.abort();
         clearMarkers();
     });
 
@@ -391,6 +417,8 @@
     }
 
     function clearMarkers() {
+        popupChartAbort?.abort();
+        popupChartAbort = null;
         openedPopup?.remove();
         for (const marker of markerMap.values()) map.removeLayer(marker);
         markerMap.clear();
@@ -460,9 +488,17 @@
     }
 
     function openBuoyPopup(buoy: BuoySummary) {
+        popupChartAbort?.abort();
+        popupChartAbort = null;
+
         openedPopup?.remove();
 
+        popupChartAbort = new AbortController();
+        const chartSignal = popupChartAbort.signal;
+
         const content = buildBuoyPopupContent(buoy);
+        void populateBuoyPopupChart(content, buoy, chartSignal);
+
         const popup = new L.Popup({
             autoPanPadding: [20, 30],
             className: 'buoy-leaflet-popup',
@@ -473,10 +509,11 @@
             .openOn(map);
 
         popup.on('remove', () => {
-            if (openedPopup === popup) {
-                openedPopup = null;
-                currentPopupBuoy = null;
-            }
+            if (openedPopup !== popup) return;
+            popupChartAbort?.abort();
+            popupChartAbort = null;
+            openedPopup = null;
+            currentPopupBuoy = null;
         });
         openedPopup = popup;
         currentPopupBuoy = buoy;
@@ -485,12 +522,30 @@
     function buildBuoyPopupContent(buoy: BuoySummary) {
         const wrapper = document.createElement('div');
         wrapper.className = 'buoy-popup';
+        wrapper.dataset.chartRange = '24';
+        wrapper.dataset.forecastModel = 'ecmwfWaves';
 
         const lastReading = buoy.last_reading;
         const readingTime = lastReading?.time || buoy.last_reading_time;
         const relativeTime = formatRelativeTime(readingTime);
         const absoluteTime = formatAbsoluteTime(readingTime, buoy.timezone);
         const color = markerColorForHeight(lastReading?.significient_height);
+
+        const rangeHours = [6, 12, 24, 48, 168] as const;
+        const rangeBtns = rangeHours
+            .map((h) => {
+                const active = h === 24 ? ' buoy-popup__range-pill--active' : '';
+                const lab = h === 168 ? t.timeRange7d : `${h}${t.timeRangeH}`;
+                return `<button type="button" class="buoy-popup__range-pill${active}" data-hours="${h}">${lab}</button>`;
+            })
+            .join('');
+
+        const showIconEu = isIconEuWavesCoverage(buoy.lat, buoy.lng);
+        const forecastModelOptionsHtml = `
+                                <option value="ecmwfWaves">${t.forecastModelEcmwf}</option>
+                                <option value="gfsWaves">${t.forecastModelGfs}</option>
+                                ${showIconEu ? `<option value="iconEuWaves">${t.forecastModelIcon}</option>` : ''}
+        `;
 
         wrapper.innerHTML = `
             <div class="buoy-popup__header" style="background-color: ${color};">
@@ -499,6 +554,36 @@
             </div>
 
             <div class="buoy-popup__stats"></div>
+
+            <div class="buoy-popup__chart-panel">
+                <button type="button" class="buoy-popup__chart-panel-toggle" aria-expanded="false" aria-controls="buoy-chart-panel-${buoy.id}">
+                    <span class="buoy-popup__chart-panel-title">${t.chartPanelToggle}</span>
+                    <span class="buoy-popup__chart-panel-chevron" aria-hidden="true"></span>
+                </button>
+                <div id="buoy-chart-panel-${buoy.id}" class="buoy-popup__chart-panel-inner" hidden>
+            <div class="buoy-popup__chart buoy-popup__chart--app">
+                <div class="buoy-popup__chart-head">
+                    <div class="buoy-popup__forecast-heading">
+                        <span class="buoy-popup__forecast-waves-label">${t.forecastWavesShort}</span>
+                        <div class="buoy-popup__forecast-model-wrap">
+                            <select id="buoy-forecast-model-${buoy.id}" class="buoy-popup__forecast-model" aria-label="${t.forecastModelAria}" title="${t.forecastModelAria}">
+                                ${forecastModelOptionsHtml}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="buoy-popup__range" role="group" aria-label="Time range">${rangeBtns}</div>
+                </div>
+                <div class="buoy-popup__chart-wrap">
+                    <div class="buoy-popup__chart-body buoy-popup__chart-body--loading">${t.forecastLoading}</div>
+                </div>
+                <div class="buoy-popup__legend">
+                    <span class="buoy-popup__legend-row"><span class="buoy-popup__legend-line buoy-popup__legend-line--sig"></span>${t.legendBuoySig}</span>
+                    <span class="buoy-popup__legend-row"><span class="buoy-popup__legend-line buoy-popup__legend-line--max"></span>${t.legendBuoyMax}</span>
+                    <span class="buoy-popup__legend-row"><span class="buoy-popup__legend-line buoy-popup__legend-line--fc"></span>${t.legendForecast}</span>
+                </div>
+            </div>
+                </div>
+            </div>
         `;
 
         const timeElement = wrapper.querySelector('.buoy-popup__time') as HTMLElement;
@@ -536,7 +621,312 @@
         `;
         wrapper.appendChild(footer);
 
+        wireChartPanelToggle(wrapper);
+        wireForecastModelSelect(wrapper, buoy);
+        wireChartRangePills(wrapper);
         return wrapper;
+    }
+
+    function localeForIntl(): string {
+        const m: Record<Locale, string> = { en: 'en-GB', fr: 'fr-FR', de: 'de-DE', es: 'es-ES', it: 'it-IT' };
+        return m[currentLocale] || 'en-GB';
+    }
+
+    type BuoyChartCache = {
+        forecastSamples: WaveForecastSample[];
+        readings: BuoyReading[];
+    };
+
+    function setBuoyChartCache(el: HTMLElement, data: BuoyChartCache) {
+        (el as HTMLElement & { __buoyChartCache?: BuoyChartCache }).__buoyChartCache = data;
+    }
+
+    function getBuoyChartCache(el: HTMLElement): BuoyChartCache | undefined {
+        return (el as HTMLElement & { __buoyChartCache?: BuoyChartCache }).__buoyChartCache;
+    }
+
+    function parseChartRangeHours(wrapper: HTMLElement): ChartTimeRangeHours {
+        const n = parseInt(wrapper.dataset.chartRange || '24', 10);
+        const allowed: ChartTimeRangeHours[] = [6, 12, 24, 48, 168];
+        return (allowed.includes(n as ChartTimeRangeHours) ? n : 24) as ChartTimeRangeHours;
+    }
+
+    function wireChartPanelToggle(wrapper: HTMLElement) {
+        const toggle = wrapper.querySelector('.buoy-popup__chart-panel-toggle') as HTMLButtonElement | null;
+        const inner = wrapper.querySelector('.buoy-popup__chart-panel-inner') as HTMLElement | null;
+        const root = wrapper.querySelector('.buoy-popup__chart-panel') as HTMLElement | null;
+        if (!toggle || !inner || !root) return;
+
+        toggle.addEventListener('click', () => {
+            const isOpen = !inner.hasAttribute('hidden');
+            if (isOpen) {
+                inner.setAttribute('hidden', '');
+                toggle.setAttribute('aria-expanded', 'false');
+                root.classList.remove('buoy-popup__chart-panel--open');
+            } else {
+                inner.removeAttribute('hidden');
+                toggle.setAttribute('aria-expanded', 'true');
+                root.classList.add('buoy-popup__chart-panel--open');
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => rerenderBuoyChartFromCache(wrapper));
+                });
+            }
+        });
+    }
+
+    function wireForecastModelSelect(wrapper: HTMLElement, buoy: BuoySummary) {
+        const sel = wrapper.querySelector('.buoy-popup__forecast-model') as HTMLSelectElement | null;
+        if (!sel) return;
+        sel.value = parseWaveForecastModelId(wrapper.dataset.forecastModel);
+
+        sel.addEventListener('change', () => {
+            wrapper.dataset.forecastModel = sel.value;
+            popupChartAbort?.abort();
+            popupChartAbort = new AbortController();
+            const bodyEl = wrapper.querySelector('.buoy-popup__chart-body') as HTMLElement | null;
+            if (bodyEl) {
+                bodyEl.className = 'buoy-popup__chart-body buoy-popup__chart-body--loading';
+                bodyEl.textContent = t.forecastLoading;
+                cleanupChartHover(bodyEl);
+            }
+            void populateBuoyPopupChart(wrapper, buoy, popupChartAbort.signal);
+        });
+    }
+
+    function wireChartRangePills(wrapper: HTMLElement) {
+        wrapper.querySelectorAll('.buoy-popup__range-pill').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const h = (btn as HTMLElement).dataset.hours;
+                if (!h) return;
+                wrapper.querySelectorAll('.buoy-popup__range-pill').forEach((b) => {
+                    b.classList.toggle('buoy-popup__range-pill--active', b === btn);
+                });
+                wrapper.dataset.chartRange = h;
+                rerenderBuoyChartFromCache(wrapper);
+            });
+        });
+    }
+
+    function rerenderBuoyChartFromCache(wrapper: HTMLElement) {
+        const bodyEl = wrapper.querySelector('.buoy-popup__chart-body') as HTMLElement | null;
+        const cache = getBuoyChartCache(wrapper);
+        if (!bodyEl) return;
+
+        if (!cache?.forecastSamples?.length) {
+            bodyEl.className = 'buoy-popup__chart-body buoy-popup__chart-body--empty';
+            bodyEl.textContent = t.forecastUnavailable;
+            cleanupChartHover(bodyEl);
+            return;
+        }
+
+        const measured = bodyEl.clientWidth || (bodyEl.parentElement?.clientWidth ?? 0);
+        const width = Math.max(260, Math.min(measured || 320, 360));
+
+        bodyEl.className = 'buoy-popup__chart-body';
+        cleanupChartHover(bodyEl);
+        const result = renderForecastChartSvg({
+            forecast: cache.forecastSamples,
+            readings: cache.readings ?? [],
+            heightUnit,
+            width,
+            height: 112,
+            primaryColor: APP_PURPLE,
+            lightColor: APP_PURPLE_LIGHT,
+            timeRangeHours: parseChartRangeHours(wrapper),
+            locale: localeForIntl(),
+        });
+        bodyEl.innerHTML = result.svg;
+
+        const tooltip = document.createElement('div');
+        tooltip.className = 'buoy-popup__chart-tooltip';
+        tooltip.style.display = 'none';
+        bodyEl.appendChild(tooltip);
+
+        wireChartHover(bodyEl, result.ctx, tooltip);
+    }
+
+    type ChartHoverHandle = HTMLElement & {
+        __buoyChartHoverCleanup?: () => void;
+    };
+
+    function cleanupChartHover(bodyEl: HTMLElement) {
+        const handle = bodyEl as ChartHoverHandle;
+        handle.__buoyChartHoverCleanup?.();
+        handle.__buoyChartHoverCleanup = undefined;
+        bodyEl.style.touchAction = '';
+    }
+
+    function wireChartHover(
+        bodyEl: HTMLElement,
+        ctx: ChartHoverContext,
+        tooltip: HTMLElement,
+    ) {
+        cleanupChartHover(bodyEl);
+        const svg = bodyEl.querySelector('svg') as SVGSVGElement | null;
+        if (!svg) return;
+        const hoverGroup = svg.querySelector('.buoy-chart-hover') as SVGGElement | null;
+        const lineEl = hoverGroup?.querySelector(
+            '.buoy-chart-hover__line',
+        ) as SVGLineElement | null;
+        const dotSig = hoverGroup?.querySelector(
+            '.buoy-chart-hover__dot--sig',
+        ) as SVGCircleElement | null;
+        const dotMax = hoverGroup?.querySelector(
+            '.buoy-chart-hover__dot--max',
+        ) as SVGCircleElement | null;
+        const dotFc = hoverGroup?.querySelector(
+            '.buoy-chart-hover__dot--fc',
+        ) as SVGCircleElement | null;
+
+        const update = (clientX: number) => {
+            const rect = svg.getBoundingClientRect();
+            if (rect.width === 0) return hide();
+            const scale = ctx.geometry.W / rect.width;
+            const pxInSvg = (clientX - rect.left) * scale;
+            const minPx = ctx.geometry.padL;
+            const maxPx = ctx.geometry.padL + ctx.geometry.innerW;
+            const clampedPx = Math.max(minPx, Math.min(pxInSvg, maxPx));
+            const tMs = chartPxToTime(ctx.geometry, clampedPx);
+
+            const isPast = tMs <= ctx.geometry.nowMs;
+            const sigY = isPast ? interpolateSeriesAt(ctx.sigPts, tMs) : null;
+            const maxY = isPast ? interpolateSeriesAt(ctx.maxPts, tMs) : null;
+            const fcY = interpolateSeriesAt(ctx.fcPts, tMs);
+
+            const reading = isPast ? nearestReadingAtTime(ctx.readings, tMs) : null;
+            const buoyDir = reading?.direction;
+            const fcSample = nearestForecastAtTime(ctx.forecast, tMs);
+            const fcDir = fcSample?.direction;
+
+            if (hoverGroup && lineEl) {
+                hoverGroup.style.display = '';
+                const x = clampedPx.toFixed(1);
+                lineEl.setAttribute('x1', x);
+                lineEl.setAttribute('x2', x);
+                positionDot(dotSig, clampedPx, sigY, ctx);
+                positionDot(dotMax, clampedPx, maxY, ctx);
+                positionDot(dotFc, clampedPx, fcY, ctx);
+            }
+
+            tooltip.innerHTML = renderTooltipHtml(tMs, sigY, maxY, buoyDir, fcY, fcDir);
+            tooltip.style.display = '';
+
+            positionTooltipNearX(bodyEl, tooltip, clientX);
+        };
+
+        function positionTooltipNearX(bodyEl: HTMLElement, tooltip: HTMLElement, clientX: number) {
+            const bodyRect = bodyEl.getBoundingClientRect();
+            const cursorXInBody = clientX - bodyRect.left;
+            const tooltipW = tooltip.offsetWidth;
+            const bodyW = bodyEl.clientWidth;
+            let left = cursorXInBody - tooltipW / 2;
+            const PAD = 4;
+            if (left < PAD) left = PAD;
+            if (left + tooltipW > bodyW - PAD) left = bodyW - tooltipW - PAD;
+            tooltip.style.left = `${left}px`;
+            const coarse =
+                typeof window !== 'undefined' &&
+                window.matchMedia('(hover: none), (pointer: coarse)').matches;
+            tooltip.classList.toggle('buoy-popup__chart-tooltip--coarse', coarse);
+            tooltip.style.top = coarse ? `${Math.min(bodyEl.clientHeight * 0.08, 10)}px` : '2px';
+        }
+
+        const hide = () => {
+            if (hoverGroup) hoverGroup.style.display = 'none';
+            tooltip.style.display = 'none';
+        };
+
+        const onPointerMove = (e: PointerEvent) => {
+            update(e.clientX);
+        };
+
+        const onPointerDown = (e: PointerEvent) => {
+            update(e.clientX);
+        };
+
+        /** Desktop: scrubber disappears when cursor leaves chart. Touch/pen kept until tap elsewhere. */
+        const onPointerLeave = (e: PointerEvent) => {
+            if (e.pointerType === 'mouse') hide();
+        };
+
+        const onDocPointerDown = (e: PointerEvent) => {
+            if (!bodyEl.contains(e.target as Node)) hide();
+        };
+
+        bodyEl.style.touchAction = 'none';
+
+        bodyEl.addEventListener('pointerdown', onPointerDown);
+        bodyEl.addEventListener('pointermove', onPointerMove);
+        bodyEl.addEventListener('pointerleave', onPointerLeave);
+        document.addEventListener('pointerdown', onDocPointerDown, true);
+
+        (bodyEl as ChartHoverHandle).__buoyChartHoverCleanup = () => {
+            bodyEl.removeEventListener('pointerdown', onPointerDown);
+            bodyEl.removeEventListener('pointermove', onPointerMove);
+            bodyEl.removeEventListener('pointerleave', onPointerLeave);
+            document.removeEventListener('pointerdown', onDocPointerDown, true);
+        };
+    }
+
+    function positionDot(
+        dot: SVGCircleElement | null,
+        cxInSvg: number,
+        y: number | null,
+        ctx: ChartHoverContext,
+    ) {
+        if (!dot) return;
+        if (y == null || !Number.isFinite(y)) {
+            dot.setAttribute('cx', '-10');
+            dot.setAttribute('cy', '-10');
+            return;
+        }
+        dot.setAttribute('cx', cxInSvg.toFixed(1));
+        dot.setAttribute('cy', chartYToPx(ctx.geometry, y).toFixed(1));
+    }
+
+    function renderTooltipHtml(
+        tMs: number,
+        sigY: number | null,
+        maxY: number | null,
+        buoyDir: number | null | undefined,
+        fcY: number | null,
+        fcDir: number | null | undefined,
+    ): string {
+        const time = new Date(tMs).toLocaleString(localeForIntl(), {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
+        const fmtDir = (d: number | null | undefined) =>
+            d != null && Number.isFinite(d) ? `${Math.round(d)}°` : '';
+
+        const rows: string[] = [`<div class="buoy-popup__chart-tooltip-time">${escapeHtml(time)}</div>`];
+        if (sigY != null || maxY != null) {
+            const sig = sigY != null ? formatHeightShort(sigY, 'm') : '—';
+            const mx = maxY != null ? formatHeightShort(maxY, 'm') : '—';
+            const dir = fmtDir(buoyDir);
+            const value = `${sig} / ${mx}${dir ? ` · ${dir}` : ''}`;
+            rows.push(
+                `<div class="buoy-popup__chart-tooltip-row buoy-popup__chart-tooltip-row--buoy"><span class="buoy-popup__chart-tooltip-swatch buoy-popup__chart-tooltip-swatch--sig"></span><span class="buoy-popup__chart-tooltip-label">${escapeHtml(t.summaryBuoyPrefix)}</span><span class="buoy-popup__chart-tooltip-value">${escapeHtml(value)}</span></div>`,
+            );
+        }
+        if (fcY != null) {
+            const h = formatHeightShort(fcY, 'm');
+            const dir = fmtDir(fcDir);
+            const value = `${h}${dir ? ` · ${dir}` : ''}`;
+            rows.push(
+                `<div class="buoy-popup__chart-tooltip-row buoy-popup__chart-tooltip-row--fc"><span class="buoy-popup__chart-tooltip-swatch buoy-popup__chart-tooltip-swatch--fc"></span><span class="buoy-popup__chart-tooltip-label">${escapeHtml(t.summaryForecastPrefix)}</span><span class="buoy-popup__chart-tooltip-value">${escapeHtml(value)}</span></div>`,
+            );
+        }
+        return rows.join('');
+    }
+
+    function escapeHtml(s: string): string {
+        return s.replace(/[&<>"]/g, (c) =>
+            c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;',
+        );
     }
 
     function createStat(label: string, value: string) {
@@ -832,6 +1222,56 @@
             .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric with hyphens
             .replace(/^-+|-+$/g, ''); // Remove leading/trailing hyphens
     }
+
+    async function fetchRecentReadings(buoy: BuoySummary, signal?: AbortSignal): Promise<BuoyReading[]> {
+        const slug = buoy.slug || generateSlug(buoy.name);
+        try {
+            const json = await fetchJson<ReadingsListResponse>(
+                `/buoys/${encodeURIComponent(slug)}/readings`,
+                { hours: 168 },
+                signal,
+            );
+            const list = json.data?.readings ?? json.readings;
+            if (Array.isArray(list) && list.length) return list;
+        } catch {
+            // Endpoint may be unavailable — use last reading only
+        }
+        if (buoy.last_reading) return [buoy.last_reading];
+        return [];
+    }
+
+    async function populateBuoyPopupChart(
+        wrapper: HTMLElement,
+        buoy: BuoySummary,
+        signal: AbortSignal,
+    ) {
+        const bodyEl = wrapper.querySelector('.buoy-popup__chart-body') as HTMLElement | null;
+        if (!bodyEl) return;
+
+        try {
+            const model = parseWaveForecastModelId(wrapper.dataset.forecastModel);
+            const [fcst, readings] = await Promise.all([
+                fetchWaveForecast(buoy.lat, buoy.lng, model, signal),
+                fetchRecentReadings(buoy, signal),
+            ]);
+            if (signal.aborted) return;
+
+            const samples = fcst?.samples ?? [];
+            setBuoyChartCache(wrapper, { forecastSamples: samples, readings });
+
+            if (!samples.length) {
+                bodyEl.className = 'buoy-popup__chart-body buoy-popup__chart-body--empty';
+                bodyEl.textContent = t.forecastUnavailable;
+                return;
+            }
+
+            rerenderBuoyChartFromCache(wrapper);
+        } catch (e) {
+            if (signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return;
+            bodyEl.className = 'buoy-popup__chart-body buoy-popup__chart-body--empty';
+            bodyEl.textContent = t.forecastUnavailable;
+        }
+    }
 </script>
 
 <style lang="less">
@@ -850,6 +1290,8 @@
     @color-gray: #6b6b6b;
     @color-gray-dark: #4d4d4d;
     @color-gray-light: #e5e5e5;
+    @app-purple: #7b5bb8;
+    @app-purple-light: #c4b2e0;
 
     :global(.buoy-marker) {
         display: inline-flex;
@@ -895,7 +1337,7 @@
 
     :global(.buoy-leaflet-popup .leaflet-popup-content) {
         margin: 0;
-        width: 280px !important;
+        width: 384px !important;
     }
 
     :global(.buoy-leaflet-popup .leaflet-popup-content-wrapper) {
@@ -923,11 +1365,11 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        color: rgba(255, 255, 255, 0.7);
+        color: rgba(50, 50, 50, 0.55);
         text-decoration: none;
         font-size: 18px;
         font-weight: 300;
-        background: rgba(0, 0, 0, 0.1);
+        background: rgba(0, 0, 0, 0.05);
         border: none;
         border-radius: 0;
         border-top-right-radius: @size-s;
@@ -943,10 +1385,234 @@
     }
 
     :global(.buoy-popup) {
-        max-width: 280px;
+        max-width: 384px;
         background: @color-white;
         border-radius: @size-s;
         overflow: hidden;
+    }
+
+    :global(.buoy-popup__chart-panel) {
+        border-top: 1px solid @color-gray-light;
+    }
+
+    :global(.buoy-popup__chart-panel-toggle) {
+        display: flex;
+        width: 100%;
+        box-sizing: border-box;
+        align-items: center;
+        justify-content: space-between;
+        gap: @size-s;
+        padding: @size-s @size-m;
+        margin: 0;
+        border: none;
+        background: #f7f4fb;
+        cursor: pointer;
+        font-family: inherit;
+        text-align: left;
+        transition: background 0.15s ease;
+    }
+
+    :global(.buoy-popup__chart-panel-toggle:hover) {
+        background: #f0ecf6;
+    }
+
+    :global(.buoy-popup__chart-panel-toggle:focus-visible) {
+        outline: 2px solid @app-purple;
+        outline-offset: -2px;
+    }
+
+    :global(.buoy-popup__chart-panel-title) {
+        font-size: @size-xs + 1px;
+        font-weight: 700;
+        color: @color-gray-dark;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+    }
+
+    :global(.buoy-popup__chart-panel-chevron) {
+        flex-shrink: 0;
+        width: 7px;
+        height: 7px;
+        border-right: 2px solid @app-purple;
+        border-bottom: 2px solid @app-purple;
+        transform: rotate(45deg);
+        margin-top: -3px;
+        transition: transform 0.18s ease, margin 0.18s ease;
+        opacity: 0.85;
+    }
+
+    :global(.buoy-popup__chart-panel--open .buoy-popup__chart-panel-chevron) {
+        transform: rotate(-135deg);
+        margin-top: 4px;
+    }
+
+    :global(.buoy-popup__chart-panel-inner[hidden]) {
+        display: none !important;
+    }
+
+    :global(.buoy-popup__chart-panel-inner:not([hidden])) {
+        animation: buoy-chart-panel-expand 0.2s ease;
+    }
+
+    @keyframes buoy-chart-panel-expand {
+        from {
+            opacity: 0.85;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+
+    :global(.buoy-popup__chart--app) {
+        padding: @size-xs @size-s @size-xs;
+    }
+
+    :global(.buoy-popup__chart-head) {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: @size-xs;
+        flex-wrap: wrap;
+        margin-bottom: 4px;
+    }
+
+    :global(.buoy-popup__forecast-heading) {
+        display: flex;
+        align-items: center;
+        gap: @size-xs;
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    :global(.buoy-popup__forecast-waves-label) {
+        font-size: @size-xxs + 1px;
+        font-weight: 700;
+        color: @color-gray;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        flex-shrink: 0;
+    }
+
+    :global(.buoy-popup__forecast-model-wrap) {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+    }
+
+    :global(.buoy-popup__forecast-model) {
+        appearance: none;
+        -webkit-appearance: none;
+        margin: 0;
+        min-width: 76px;
+        max-width: 100%;
+        padding: 6px 26px 6px 10px;
+        font-size: @size-s;
+        font-weight: 800;
+        font-family: inherit;
+        letter-spacing: -0.03em;
+        color: #fff;
+        background-color: @app-purple;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23ffffff' d='M6 8L1 3h10z' opacity='0.92'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 8px center;
+        background-size: 10px 10px;
+        border: none;
+        border-radius: @size-xs;
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.2) inset,
+            0 1px 3px rgba(93, 61, 148, 0.28);
+        cursor: pointer;
+        line-height: 1.2;
+        transition:
+            background-color 0.15s ease,
+            box-shadow 0.15s ease;
+    }
+
+    :global(.buoy-popup__forecast-model:hover) {
+        background-color: darken(@app-purple, 7%);
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.28) inset,
+            0 2px 5px rgba(93, 61, 148, 0.32);
+    }
+
+    :global(.buoy-popup__forecast-model:focus) {
+        outline: none;
+    }
+
+    :global(.buoy-popup__forecast-model:focus-visible) {
+        outline: 2px solid #fff;
+        outline-offset: 2px;
+        box-shadow: 0 0 0 3px fade(@app-purple, 50%);
+    }
+
+    :global(.buoy-popup__chart-wrap) {
+        padding: 2px 2px 0;
+        background: transparent;
+        border: none;
+    }
+
+    :global(.buoy-popup__range) {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 2px;
+        padding: 2px;
+        background: #f0ecf6;
+        border-radius: 999px;
+    }
+
+    :global(.buoy-popup__range-pill) {
+        border: none;
+        margin: 0;
+        padding: 3px 7px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 600;
+        cursor: pointer;
+        background: transparent;
+        color: @color-gray;
+        line-height: 1.2;
+    }
+
+    :global(.buoy-popup__range-pill--active) {
+        background: @app-purple;
+        color: #fff;
+    }
+
+    :global(.buoy-popup__legend) {
+        display: flex;
+        flex-wrap: wrap;
+        gap: @size-xs;
+        margin-top: 6px;
+        font-size: 10px;
+        color: @color-gray;
+        line-height: 1.2;
+    }
+
+    :global(.buoy-popup__legend-row) {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    :global(.buoy-popup__legend-line) {
+        display: inline-block;
+        width: 14px;
+        height: 0;
+        border: none;
+    }
+
+    :global(.buoy-popup__legend-line--sig) {
+        border-top: 2.5px solid @app-purple;
+    }
+
+    :global(.buoy-popup__legend-line--max) {
+        border-top: 2px solid @app-purple-light;
+    }
+
+    :global(.buoy-popup__legend-line--fc) {
+        border-top: 2px dashed @app-purple;
+        opacity: 0.7;
     }
 
     :global(.buoy-popup__header) {
@@ -981,6 +1647,113 @@
         flex-direction: column;
         gap: 1px;
         background: @color-gray-light;
+    }
+
+    :global(.buoy-popup__chart-body) {
+        min-height: 112px;
+        display: block;
+        position: relative;
+        cursor: crosshair;
+        isolation: isolate;
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+
+    :global(.buoy-popup__chart-body svg) {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0 auto;
+        position: relative;
+        z-index: 0;
+    }
+
+    :global(.buoy-popup__chart-tooltip) {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        background: rgba(255, 255, 255, 0.97);
+        border: 1px solid rgba(123, 91, 184, 0.18);
+        border-radius: @size-xs;
+        padding: 5px 7px;
+        font-size: 10.5px;
+        line-height: 1.35;
+        color: @color-gray-dark;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+        white-space: nowrap;
+        z-index: 2;
+        max-width: calc(100% - 8px);
+        transform: translateZ(0);
+    }
+
+    :global(.buoy-popup__chart-tooltip-time) {
+        font-size: 9.5px;
+        color: @color-gray;
+        margin-bottom: 3px;
+        font-weight: 500;
+    }
+
+    :global(.buoy-popup__chart-tooltip-row) {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+    :global(.buoy-popup__chart-tooltip-swatch) {
+        flex: 0 0 6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+    }
+
+    :global(.buoy-popup__chart-tooltip-swatch--sig) {
+        background: @app-purple;
+    }
+
+    :global(.buoy-popup__chart-tooltip-swatch--fc) {
+        background: @app-purple;
+        opacity: 0.55;
+    }
+
+    :global(.buoy-popup__chart-tooltip-label) {
+        color: @color-gray;
+        font-weight: 500;
+    }
+
+    :global(.buoy-popup__chart-tooltip-value) {
+        font-weight: 700;
+        margin-left: auto;
+    }
+
+    :global(.buoy-popup__chart-tooltip--coarse) {
+        font-size: 11px;
+        white-space: normal;
+        max-width: calc(100% - 6px);
+        padding: 6px 8px;
+    }
+
+    :global(.buoy-popup__chart-tooltip--coarse .buoy-popup__chart-tooltip-time) {
+        font-size: 10px;
+    }
+
+    @media (hover: none), (pointer: coarse) {
+        :global(.buoy-popup__chart-body:not(.buoy-popup__chart-body--loading):not(.buoy-popup__chart-body--empty)) {
+            cursor: grab;
+        }
+        :global(.buoy-popup__chart-body:not(.buoy-popup__chart-body--loading):not(.buoy-popup__chart-body--empty):active) {
+            cursor: grabbing;
+        }
+    }
+
+    :global(.buoy-popup__chart-body--loading),
+    :global(.buoy-popup__chart-body--empty) {
+        font-size: @size-xxs + 1px;
+        color: @color-gray;
+        text-align: center;
+        padding: @size-xs @size-xxs;
+        min-height: 80px;
     }
 
     :global(.buoy-popup__stats-row) {

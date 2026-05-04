@@ -26,4 +26,28 @@ export const de = {
     minutes: 'Min.',
     ago: 'vor',
     seconds: 's',
+
+    // Forecast chart
+    forecast: 'ECMWF Wellenvorhersage',
+    forecastLoading: 'Vorhersage wird geladen…',
+    forecastUnavailable: 'Vorhersage nicht verfügbar',
+    forecastWavesShort: 'Wellen',
+    forecastModelAria: 'Wellenvorhersagemodell',
+    forecastModelEcmwf: 'ECMWF',
+    forecastModelGfs: 'GFS',
+    forecastModelIcon: 'ICON',
+    chartPanelToggle: 'Messwerte vs. Vorhersage',
+
+    tabWaves: 'Wellen',
+    tabPeriod: 'Periode',
+    tabEnergy: 'Energie',
+    tabWind: 'Wind',
+    summaryBuoyPrefix: 'Boje',
+    summaryForecastPrefix: 'Vorhersage',
+    legendBuoySig: 'Signifikante Höhe an der Boje',
+    legendBuoyMax: 'Max. Höhe an der Boje',
+    legendForecast: 'Wellenvorhersage',
+    timeRangeH: 'h',
+    timeRange7d: '7 T.',
+    windTabHint: 'Wind: Windy-Karten oder die vollständige Bojenseite öffnen.',
 };

@@ -26,4 +26,29 @@ export const fr = {
     minutes: 'min',
     ago: 'il y a',
     seconds: 's',
+
+    // Forecast chart (plural « prévisions » for série temporelle / plusieurs pas de temps)
+    forecast: 'Prévisions des vagues ECMWF',
+    forecastLoading: 'Chargement des prévisions…',
+    forecastUnavailable: 'Prévisions indisponibles',
+    forecastWavesShort: 'Vagues',
+    forecastModelAria: 'Modèle de prévision des vagues',
+    forecastModelEcmwf: 'ECMWF',
+    forecastModelGfs: 'GFS',
+    forecastModelIcon: 'ICON',
+    chartPanelToggle: 'Observations vs prévisions',
+
+    // App-style detail (popup)
+    tabWaves: 'Vagues',
+    tabPeriod: 'Période',
+    tabEnergy: 'Énergie',
+    tabWind: 'Vent',
+    summaryBuoyPrefix: 'Bouée',
+    summaryForecastPrefix: 'Prévisions',
+    legendBuoySig: 'Taille à la bouée',
+    legendBuoyMax: 'Taille maximale à la bouée',
+    legendForecast: 'Prévisions (vagues)',
+    timeRangeH: 'h',
+    timeRange7d: '7 j',
+    windTabHint: 'Vent : utilisez les couches Windy ou ouvrez la page bouée complète.',
 };
