@@ -2,7 +2,7 @@ import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
     name: 'windy-plugin-the-buoy',
-    version: '0.1.11',
+    version: '0.1.12',
     icon: '🌊',
     title: 'The Buoy',
     description:
