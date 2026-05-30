@@ -13,6 +13,13 @@ export type ChartTimeRangeHours = 6 | 12 | 24 | 48 | 168;
 
 export type ChartTimeSeriesPoint = { t: number; y: number };
 
+export type ChartMarker = {
+    time: number;
+    label: string;
+    color: string;
+    dashed?: boolean;
+};
+
 export type ChartGeometry = {
     W: number;
     H: number;
@@ -247,9 +254,15 @@ export function renderForecastChartSvg(opts: {
     height: number;
     primaryColor: string;
     lightColor: string;
+    observationColor?: string;
+    observationLightColor?: string;
     timeRangeHours: ChartTimeRangeHours;
     nowMs?: number;
     locale?: string;
+    snapshotMode?: boolean;
+    markers?: ChartMarker[];
+    importantTimes?: number[];
+    showNowLine?: boolean;
 }): ChartRenderResult {
     const {
         forecast,
@@ -259,9 +272,15 @@ export function renderForecastChartSvg(opts: {
         height: H,
         primaryColor,
         lightColor,
+        observationColor = primaryColor,
+        observationLightColor = lightColor,
         timeRangeHours,
         nowMs = Date.now(),
         locale,
+        snapshotMode = false,
+        markers = [],
+        importantTimes = [],
+        showNowLine = true,
     } = opts;
 
     const padL = 6;
@@ -312,10 +331,18 @@ export function renderForecastChartSvg(opts: {
             xMax = Math.max(dataMax + margin, nowMs + minFutureWindow);
         }
     }
+    for (const t of importantTimes) {
+        if (!Number.isFinite(t)) continue;
+        if (t < xMin) xMin = t - margin;
+        if (t > xMax) xMax = t + margin;
+    }
+
+    const chartSigPts = snapshotMode && sigPts.length ? [sigPts[sigPts.length - 1]] : sigPts;
+    const chartMaxPts = snapshotMode && maxPts.length ? [maxPts[maxPts.length - 1]] : maxPts;
 
     const allY: number[] = [
-        ...sigPts.map(p => p.y),
-        ...maxPts.map(p => p.y),
+        ...chartSigPts.map(p => p.y),
+        ...chartMaxPts.map(p => p.y),
         ...fcPts.map(p => p.y),
     ];
     /** Y-axis always includes 0 (wave height is a magnitude from the baseline). */
@@ -341,12 +368,12 @@ export function renderForecastChartSvg(opts: {
     }
 
     const nowX = xToPx(nowMs);
-    const showNow = nowX >= padL - 2 && nowX <= padL + innerW + 2;
+    const showNow = showNowLine && nowX >= padL - 2 && nowX <= padL + innerW + 2;
 
     const pathSig =
-        sigPts.length >= 2 ? buildClippedPath(sigPts, xToPx, yToPx, nowMs) : '';
+        !snapshotMode && chartSigPts.length >= 2 ? buildClippedPath(chartSigPts, xToPx, yToPx, nowMs) : '';
     const pathMax =
-        maxPts.length >= 2 ? buildClippedPath(maxPts, xToPx, yToPx, nowMs) : '';
+        !snapshotMode && chartMaxPts.length >= 2 ? buildClippedPath(chartMaxPts, xToPx, yToPx, nowMs) : '';
     const pathFc = fcPts.length >= 2 ? buildFullPath(fcPts, xToPx, yToPx) : '';
 
     const gridColor = 'rgba(0,0,0,0.06)';
@@ -397,29 +424,49 @@ export function renderForecastChartSvg(opts: {
         .join('');
 
     const dotsSig =
-        sigPts.length === 1 && !pathSig
-            ? `<circle cx="${xToPx(sigPts[0].t).toFixed(1)}" cy="${yToPx(sigPts[0].y).toFixed(1)}" r="3.5" fill="${primaryColor}" stroke="#fff" stroke-width="1.25"/>`
+        chartSigPts.length === 1 && !pathSig
+            ? snapshotMode
+                ? `<circle cx="${xToPx(chartSigPts[0].t).toFixed(1)}" cy="${yToPx(chartSigPts[0].y).toFixed(1)}" r="6" fill="${observationColor}" fill-opacity="0.16" stroke="${observationColor}" stroke-width="1.5"/><circle cx="${xToPx(chartSigPts[0].t).toFixed(1)}" cy="${yToPx(chartSigPts[0].y).toFixed(1)}" r="3.7" fill="${observationColor}" stroke="#fff" stroke-width="1.4"/>`
+                : `<circle cx="${xToPx(chartSigPts[0].t).toFixed(1)}" cy="${yToPx(chartSigPts[0].y).toFixed(1)}" r="3.5" fill="${observationColor}" stroke="#fff" stroke-width="1.25"/>`
             : '';
     const dotsMax =
-        maxPts.length === 1 && !pathMax
-            ? `<circle cx="${xToPx(maxPts[0].t).toFixed(1)}" cy="${yToPx(maxPts[0].y).toFixed(1)}" r="3" fill="${lightColor}" stroke="#fff" stroke-width="1"/>`
+        chartMaxPts.length === 1 && !pathMax
+            ? `<circle cx="${xToPx(chartMaxPts[0].t).toFixed(1)}" cy="${yToPx(chartMaxPts[0].y).toFixed(1)}" r="3" fill="${observationLightColor}" stroke="#fff" stroke-width="1"/>`
             : '';
 
     const empty = !pathFc && !pathSig && !pathMax && !dotsSig && !dotsMax;
 
+    const markerLayer = markers
+        .filter((marker) => Number.isFinite(marker.time))
+        .map((marker, index) => {
+            const x = xToPx(marker.time);
+            if (x < padL - 2 || x > padL + innerW + 2) return '';
+            const labelY = padT + 8 + (index % 2) * 11;
+            const nearRight = x > padL + innerW - 64;
+            const textAnchor = nearRight ? 'end' : 'start';
+            const textX = x + (nearRight ? -4 : 4);
+            const dash = marker.dashed ? ' stroke-dasharray="3 3"' : '';
+            return `<g class="buoy-chart-marker" pointer-events="none">
+    <line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${padT + innerH}" stroke="${marker.color}" stroke-opacity="0.72" stroke-width="1.25"${dash}/>
+    <text x="${textX.toFixed(1)}" y="${labelY.toFixed(1)}" fill="${marker.color}" font-size="8.5" font-weight="700" text-anchor="${textAnchor}" paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round">${escapeXml(marker.label)}</text>
+  </g>`;
+        })
+        .join('');
+
     const hoverLayer = `<g class="buoy-chart-hover" pointer-events="none" style="display:none">
     <line class="buoy-chart-hover__line" x1="0" y1="${padT}" x2="0" y2="${padT + innerH}" stroke="${primaryColor}" stroke-width="1" stroke-dasharray="2 2"/>
-    <circle class="buoy-chart-hover__dot buoy-chart-hover__dot--max" cx="-10" cy="-10" r="3" fill="${lightColor}" stroke="#fff" stroke-width="1.25"/>
+    <circle class="buoy-chart-hover__dot buoy-chart-hover__dot--max" cx="-10" cy="-10" r="3" fill="${observationLightColor}" stroke="#fff" stroke-width="1.25"/>
     <circle class="buoy-chart-hover__dot buoy-chart-hover__dot--fc" cx="-10" cy="-10" r="3" fill="${primaryColor}" fill-opacity="0.7" stroke="#fff" stroke-width="1.25"/>
-    <circle class="buoy-chart-hover__dot buoy-chart-hover__dot--sig" cx="-10" cy="-10" r="3.5" fill="${primaryColor}" stroke="#fff" stroke-width="1.5"/>
+    <circle class="buoy-chart-hover__dot buoy-chart-hover__dot--sig" cx="-10" cy="-10" r="3.5" fill="${observationColor}" stroke="#fff" stroke-width="1.5"/>
   </g>`;
 
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Wave chart">
   ${gridH}
   ${yLabels}
   ${pathFc ? `<path d="${pathFc}" fill="none" stroke="${primaryColor}" stroke-opacity="0.55" stroke-width="1.75" stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-  ${pathMax ? `<path d="${pathMax}" fill="none" stroke="${lightColor}" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
-  ${pathSig ? `<path d="${pathSig}" fill="none" stroke="${primaryColor}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+  ${pathMax ? `<path d="${pathMax}" fill="none" stroke="${observationLightColor}" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+  ${pathSig ? `<path d="${pathSig}" fill="none" stroke="${observationColor}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+  ${markerLayer}
   ${dotsSig}
   ${dotsMax}
   ${showNow ? `<line x1="${nowX.toFixed(1)}" y1="${padT}" x2="${nowX.toFixed(1)}" y2="${padT + innerH}" stroke="${primaryColor}" stroke-opacity="0.5" stroke-width="1" stroke-dasharray="2 2"/>` : ''}
@@ -432,8 +479,8 @@ export function renderForecastChartSvg(opts: {
         svg,
         ctx: {
             geometry: { W, H, padL, padR, padT, padB, innerW, innerH, xMin, xMax, yMin, yMax, nowMs },
-            sigPts,
-            maxPts,
+            sigPts: chartSigPts,
+            maxPts: chartMaxPts,
             fcPts,
             forecast,
             readings,
